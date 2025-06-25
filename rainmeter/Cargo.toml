@@ -3,4 +3,7 @@ name = "rainmeter"
 version = "0.1.0"
 edition = "2024"
 
+
 [dependencies]
+tao="0.34.0"
+once_cell = "1.21.3"
