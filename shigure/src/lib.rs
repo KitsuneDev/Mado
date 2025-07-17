@@ -5,7 +5,8 @@ use std::ffi::OsStr;
 use std::os::windows::ffi::OsStrExt;
 use std::path::PathBuf;
 use std::sync::mpsc::channel;
-use std::{env, fs};
+use std::time::Duration;
+use std::{env, fs, thread};
 
 use tao::platform::windows::{EventLoopBuilderExtWindows, WindowExtWindows};
 use tao::{
@@ -18,77 +19,29 @@ use tao::{
 use windows::Win32::Foundation::{HWND, LPARAM, WPARAM};
 use windows::Win32::System::Com::{COINIT_APARTMENTTHREADED, CoInitializeEx};
 use windows::Win32::UI::WindowsAndMessaging::{
-    EnumWindows, FindWindowA, FindWindowExA, HWND_TOPMOST, MB_OK, MessageBoxA, SMTO_NORMAL,
-    SWP_NOACTIVATE, SWP_SHOWWINDOW, SendMessageTimeoutA, SetParent, SetWindowPos,
+    EnumWindows, FindWindowA, FindWindowExA, GetShellWindow, HWND_TOPMOST, MB_OK, MessageBoxA,
+    SMTO_NORMAL, SWP_NOACTIVATE, SWP_SHOWWINDOW, SendMessageTimeoutA, SetParent, SetWindowPos,
 };
-use windows::core::{BOOL, PCSTR, PCWSTR};
+use windows::core::{BOOL, PCSTR, PCWSTR, w};
 
 use wry::{WebContext, WebViewBuilder};
 
 use rainmeter::*;
-
-unsafe extern "system" fn enum_windows_proc(hwnd: HWND, lparam: LPARAM) -> BOOL {
-    // Look for SHELLDLL_DefView child
-    let defview = unsafe {
-        FindWindowExA(
-            Some(hwnd),
-            None,
-            PCSTR(b"SHELLDLL_DefView\0".as_ptr()),
-            PCSTR::null(),
-        )
-        .unwrap_or_default()
-    };
-    if defview.0.is_null() {
-        return BOOL(1);
-    }
-    // Found: now get WorkerW
-    let workerw = unsafe {
-        FindWindowExA(
-            None,
-            Some(hwnd),
-            PCSTR(b"WorkerW\0".as_ptr()),
-            PCSTR::null(),
-        )
-        .unwrap_or_default()
-    };
-    if workerw.0.is_null() {
-        let out = lparam.0 as *mut HWND;
-        *out = workerw;
-        return BOOL(0);
-    }
-    BOOL(1)
-}
 /// Move a window into the desktop layer
-fn set_window_layer(window: &tao::window::Window) -> windows::core::Result<()> {
+fn set_window_layer(
+    window: &tao::window::Window,
+    ctx: &RainmeterContext,
+) -> windows::core::Result<()> {
     let hwnd = HWND(window.hwnd() as _);
     // Find Progman
-    let progman = unsafe { FindWindowA(PCSTR(b"Progman\0".as_ptr()), PCSTR::null())? };
-    // Spawn worker
-    unsafe {
-        SendMessageTimeoutA(
-            progman,
-            0x052C,
-            WPARAM(0),
-            LPARAM(0),
-            SMTO_NORMAL,
-            1000,
-            None,
+    ctx.log(RmLogLevel::LogDebug, "WebNative: Finding Progman...");
+    let desktop = unsafe { GetShellWindow() };
+    let res = unsafe { SetParent(hwnd, Some(desktop)) };
+    if res.is_err() {
+        ctx.log(
+            RmLogLevel::LogError,
+            &format!("WebNative: SetParent (reparent) failed: {:?}", res.err()),
         );
-    }
-    // Enumerate for WorkerW
-    let mut workerw = HWND(std::ptr::null_mut());
-    unsafe {
-        EnumWindows(
-            Some(enum_windows_proc),
-            LPARAM(&mut workerw as *mut _ as isize),
-        );
-    }
-    if workerw.0.is_null() {
-        return Err(windows::core::Error::from_win32());
-    }
-    // Reparent
-    unsafe {
-        SetParent(hwnd, Some(workerw))?;
     }
     Ok(())
 }
@@ -195,11 +148,11 @@ impl RainmeterPlugin for OverlayMeter {
             let result = std::panic::catch_unwind(|| {
                 // Prepare the thread for COM
                 // 1) Initialize COM for this thread
-                unsafe {
+                /*unsafe {
                     CoInitializeEx(None, COINIT_APARTMENTTHREADED)
                         .ok()
                         .expect("CoInitializeEx failed");
-                }
+                }*/
 
                 let event_loop = EventLoopBuilder::new().with_any_thread(true).build();
 
@@ -213,7 +166,7 @@ impl RainmeterPlugin for OverlayMeter {
                     .expect("Failed to create window");
 
                 // Parent under desktop layer
-                //set_window_layer(&window).expect("Failed to set window layer");
+                set_window_layer(&window, &ctx).expect("Failed to set window layer");
 
                 // Send back the HWND
                 let hwnd = window.hwnd() as isize;
@@ -228,6 +181,10 @@ impl RainmeterPlugin for OverlayMeter {
                     "C:\\Users\\Kitsune\\Documents\\datadir",
                 )));*/
                 let data_dir = make_webview_data_dir(&ctx);
+                ctx.log(
+                    RmLogLevel::LogNotice,
+                    &format!("WebView2 user data folder: {:?}", data_dir),
+                );
                 let mut ctx = WebContext::new(Some(data_dir));
                 unsafe {
                     MessageBoxA(
@@ -241,7 +198,7 @@ impl RainmeterPlugin for OverlayMeter {
                     );
                 }
                 let _wv = WebViewBuilder::new_with_web_context(&mut ctx)
-                    .with_url(&url)
+                    .with_url("https://www.example.com") // or any URL/HTML you like
                     .build(&window)
                     .expect("Failed to build WebView");
 
