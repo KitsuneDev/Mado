@@ -1,173 +1,73 @@
-use std::ffi::{CString, OsStr};
+//! src/overlay_meter_plugin.rs
+//! Updated OverlayMeter Rainmeter plugin using the new Rust‑native API
+
+use std::ffi::OsStr;
 use std::os::windows::ffi::OsStrExt;
 use std::path::PathBuf;
-use std::ptr;
-use std::ptr::null_mut;
-use rainmeter::*;
 use std::sync::mpsc::channel;
+use std::{env, fs};
 
-// 1) Import the builder & extension
-use tao::{
-    event_loop::{EventLoopBuilder, ControlFlow},
-    dpi::{LogicalPosition, LogicalSize},
-    event::Event,
-};
 use tao::platform::windows::{EventLoopBuilderExtWindows, WindowExtWindows};
-use tao::window::WindowBuilder;
+use tao::{
+    dpi::{LogicalPosition, LogicalSize},
+    event::{Event, WindowEvent},
+    event_loop::{ControlFlow, EventLoopBuilder},
+    window::WindowBuilder,
+};
 
-use windows::core::{BOOL, PCSTR, PCWSTR};
-use windows::Win32::UI::WindowsAndMessaging::{SetWindowPos, SWP_NOACTIVATE, SWP_SHOWWINDOW, HWND_TOPMOST, MessageBoxW, MB_OK, FindWindowA, SendMessageTimeoutA, SMTO_NORMAL, FindWindowExA, EnumWindows, SetParent};
 use windows::Win32::Foundation::{HWND, LPARAM, WPARAM};
+use windows::Win32::System::Com::{COINIT_APARTMENTTHREADED, CoInitializeEx};
+use windows::Win32::UI::WindowsAndMessaging::{
+    EnumWindows, FindWindowA, FindWindowExA, HWND_TOPMOST, MB_OK, MessageBoxA, SMTO_NORMAL,
+    SWP_NOACTIVATE, SWP_SHOWWINDOW, SendMessageTimeoutA, SetParent, SetWindowPos,
+};
+use windows::core::{BOOL, PCSTR, PCWSTR};
 
 use wry::{WebContext, WebViewBuilder};
 
-fn wide(s: &str) -> Vec<u16> {
-    OsStr::new(s).encode_wide().chain(Some(0)).collect()
-}
+use rainmeter::*;
 
-struct OverlayMeter {
-    url:    String,
-    width:  u32,
-    height: u32,
-    x:      i32,
-    y:      i32,
-    hwnd:   Option<isize>,
-}
-
-impl Default for OverlayMeter {
-    fn default() -> Self {
-        Self {
-            url:    "https://openai.com".into(),
-            width:  300,
-            height: 200,
-            x:      0,
-            y:      0,
-            hwnd:   None,
-        }
-    }
-}
-
-impl OverlayMeter {
-    fn reposition(&self) {
-        if let Some(raw) = self.hwnd {
-            // 3) directly wrap the isize
-            let hwnd = HWND(raw as *mut _);
-            unsafe {
-                SetWindowPos(
-                    hwnd,
-                    Option::from(HWND_TOPMOST),
-                    self.x,
-                    self.y,
-                    self.width as i32,
-                    self.height as i32,
-                    SWP_NOACTIVATE | SWP_SHOWWINDOW,
-                ).expect("Failed to put the window in the desktop layer");
-            }
-        }
-    }
-}
-
-impl RainmeterPlugin for OverlayMeter {
-    fn initialize(&mut self) {
-        let (tx, rx) = channel();
-        let url    = self.url.clone();
-        let w      = self.width;
-        let h      = self.height;
-        let x      = self.x;
-        let y      = self.y;
-
-        std::thread::spawn(move || {
-            let res = std::panic::catch_unwind(|| {
-                // 1) Use the builder + any_thread
-                let event_loop = EventLoopBuilder::new()
-                    .with_any_thread(true)
-                    .build();
-
-                let window = WindowBuilder::new()
-                    .with_decorations(false)
-                    .with_transparent(true)
-                    .with_always_on_top(false)
-                    .with_inner_size(LogicalSize::new(w, h))
-                    .with_position(LogicalPosition::new(x, y))
-                    .build(&event_loop)
-                    .expect("Failed to configure Window");
-
-                set_window_layer(&window);
-
-                // 3) grab and send the raw handle value
-                let raw_handle = window.hwnd() as isize;
-                tx.send(raw_handle).unwrap();
-
-                // 4) current wry API
-                let mut webcontext = WebContext::new(Some(PathBuf::from("C:\\Users\\Kitsune\\Documents\\datadir")));
-                let _wv = WebViewBuilder::new_with_web_context(&mut webcontext)
-                    .with_url(&url)
-                    .build(&window)
-                    .expect("Failed to build Window");
-
-                // 2) Poll so the WebView actually updates
-                event_loop.run(move |event, _, control_flow| {
-                    *control_flow = ControlFlow::Poll;
-                    if let Event::WindowEvent { event: tao::event::WindowEvent::CloseRequested, .. } = event {
-                        *control_flow = ControlFlow::Exit;
-                    }
-                });
-            });
-            if let Err(err) = res {
-                let msg = err
-                    .downcast_ref::<&str>()
-                    .map(|s| *s)
-                    .or_else(|| err.downcast_ref::<String>().map(|s| &**s))
-                    .unwrap_or("<non-string panic>");
-                let txt = wide(&format!("Thread panic: {}", msg));
-                let cap = wide("Error");
-                unsafe {
-                    MessageBoxW(
-                        None,
-                        PCWSTR(txt.as_ptr()),
-                        PCWSTR(cap.as_ptr()),
-                        MB_OK,
-                    );
-                }
-            }
-        });
-
-        if let Ok(raw) = rx.recv() {
-            self.hwnd = Some(raw);
-        }
-    }
-
-    fn update(&mut self) -> f64 {
-        self.reposition();
-        0.0
-    }
-
-    fn set_option(&mut self, key: &str, val: &str) {
-        match key.to_lowercase().as_str() {
-            "url"    => self.url    = val.to_string(),
-            "width"  => self.width  = val.parse().unwrap_or(self.width),
-            "height" => self.height = val.parse().unwrap_or(self.height),
-            "x"      => self.x      = val.parse().unwrap_or(self.x),
-            "y"      => self.y      = val.parse().unwrap_or(self.y),
-            _        => {}
-        }
-        self.reposition();
-    }
-
-    fn finalize(&mut self) {
-        // nothing else to do here for now
-    }
-}
-
-fn set_window_layer(window: &tao::window::Window) {
-    let progman = unsafe {
-        let progman_name = c"Progman";
-        FindWindowA(PCSTR(progman_name.as_ptr() as *const u8), None).expect("Could not find ProgMan")
+unsafe extern "system" fn enum_windows_proc(hwnd: HWND, lparam: LPARAM) -> BOOL {
+    // Look for SHELLDLL_DefView child
+    let defview = unsafe {
+        FindWindowExA(
+            Some(hwnd),
+            None,
+            PCSTR(b"SHELLDLL_DefView\0".as_ptr()),
+            PCSTR::null(),
+        )
+        .unwrap_or_default()
     };
+    if defview.0.is_null() {
+        return BOOL(1);
+    }
+    // Found: now get WorkerW
+    let workerw = unsafe {
+        FindWindowExA(
+            None,
+            Some(hwnd),
+            PCSTR(b"WorkerW\0".as_ptr()),
+            PCSTR::null(),
+        )
+        .unwrap_or_default()
+    };
+    if workerw.0.is_null() {
+        let out = lparam.0 as *mut HWND;
+        *out = workerw;
+        return BOOL(0);
+    }
+    BOOL(1)
+}
+/// Move a window into the desktop layer
+fn set_window_layer(window: &tao::window::Window) -> windows::core::Result<()> {
+    let hwnd = HWND(window.hwnd() as _);
+    // Find Progman
+    let progman = unsafe { FindWindowA(PCSTR(b"Progman\0".as_ptr()), PCSTR::null())? };
+    // Spawn worker
     unsafe {
-        let _ = SendMessageTimeoutA(
+        SendMessageTimeoutA(
             progman,
-            0x052C,       // WM_SPAWN_WORKER
+            0x052C,
             WPARAM(0),
             LPARAM(0),
             SMTO_NORMAL,
@@ -175,74 +75,240 @@ fn set_window_layer(window: &tao::window::Window) {
             None,
         );
     }
-
-
-
-
-
-    // 2b) Find the WorkerW window that now hosts the desktop icons
-    let mut raw_worker: HWND = HWND(ptr::null_mut());
-    unsafe extern "system" fn enum_proc(hwnd: HWND, lparam: LPARAM) -> BOOL {
-        // Look for the SHELLDLL_DefView child
-        if let Ok(defview) = FindWindowExA(
-            Some(hwnd),
-            None,
-            PCSTR(b"SHELLDLL_DefView\0".as_ptr()),
-            PCSTR::null(),
-        ) {
-            // defview.0 is the raw *mut c_void; non-null means we found it
-            if !defview.0.is_null() {
-                // The sibling WorkerW is our target
-                let worker = FindWindowExA(
-                    None,
-                    Some(hwnd),
-                    PCSTR(b"WorkerW\0".as_ptr()),
-                    PCSTR::null(),
-                )
-                    .expect("FindWindowExA(\"WorkerW\") failed");
-                // Write it back into raw_worker
-                let out_ptr = lparam.0 as *mut HWND;
-                *out_ptr = worker;
-                return BOOL(0); // stop enumeration
-            }
-        }
-        BOOL(1) // continue
-    }
-
-    
+    // Enumerate for WorkerW
+    let mut workerw = HWND(std::ptr::null_mut());
     unsafe {
-        // Enumerate top‐level windows
         EnumWindows(
-            Some(enum_proc),
-            LPARAM(&mut raw_worker as *mut HWND as isize),
-        )
-            .expect("EnumWindows failed");
-    }
-
-
-    let txt = wide("We have the enumeration");
-    let cap = wide("Error");
-    unsafe {
-        MessageBoxW(
-            None,
-            PCWSTR(txt.as_ptr()),
-            PCWSTR(cap.as_ptr()),
-            MB_OK,
+            Some(enum_windows_proc),
+            LPARAM(&mut workerw as *mut _ as isize),
         );
     }
+    if workerw.0.is_null() {
+        return Err(windows::core::Error::from_win32());
+    }
+    // Reparent
+    unsafe {
+        SetParent(hwnd, Some(workerw))?;
+    }
+    Ok(())
+}
 
-    // 2c) Finally, re‐parent *your* window into that WorkerW
-    // 4) If raw_worker.0 is non-null, we found it—reparent our window
-    if !raw_worker.0.is_null() {
-        // Tao’s `hwnd()` gives you the raw handle as `isize`, so cast it back
-        let our_raw: *mut c_void = window.hwnd() as *mut c_void;
-        let our_hwnd = HWND(our_raw);
+/// Our plugin type
+#[derive(Default)]
+struct OverlayMeter {
+    url: String,
+    width: u32,
+    height: u32,
+    x: i32,
+    y: i32,
+    hwnd: Option<isize>,
+}
 
-        unsafe {
-            SetParent(our_hwnd, Some(raw_worker))
-                .expect("SetParent failed");
+impl OverlayMeter {
+    /// Move/resize the overlay window
+    fn reposition(&self, ctx: &RainmeterContext) {
+        if let Some(raw) = self.hwnd {
+            let hwnd = HWND(raw as _);
+            unsafe {
+                let result = SetWindowPos(
+                    hwnd,
+                    Some(HWND_TOPMOST),
+                    self.x,
+                    self.y,
+                    self.width as i32,
+                    self.height as i32,
+                    SWP_NOACTIVATE | SWP_SHOWWINDOW,
+                );
+                if let Err(e) = result {
+                    // level 1 == LOG_ERROR
+                    ctx.log(
+                        RmLogLevel::LogError,
+                        &format!("SetWindowPos failed: {:?}", e),
+                    );
+                }
+            }
         }
     }
 }
 
-declare_plugin!(OverlayMeter);
+fn make_webview_data_dir(rm: &RainmeterContext) -> PathBuf {
+    // 1) Base it on %LOCALAPPDATA%\Rainmeter\OverlayMeter
+    let base = env::var_os("LOCALAPPDATA")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| {
+            rm.log(
+                RmLogLevel::LogWarning,
+                "LOCALAPPDATA not found; using current directory for WebView data",
+            );
+            env::current_dir().expect("Could not get current directory")
+        })
+        .join("Rainmeter")
+        .join("OverlayMeter");
+
+    // 2) Create it (and parents)
+    if let Err(e) = fs::create_dir_all(&base) {
+        rm.log(
+            RmLogLevel::LogError,
+            &format!("Failed to create WebView data dir {:?}: {}", base, e),
+        );
+    }
+
+    // 3) Tell the user where we’ll store it
+    rm.log(
+        RmLogLevel::LogNotice,
+        &format!("WebView2 user data folder: {:?}", base),
+    );
+    base
+}
+
+impl OverlayMeter {
+    fn load_data(&mut self, rm: &RainmeterContext) {
+        // Read options from the skin
+        self.url = rm.read_string("url", &self.url);
+        self.width = rm.read_formula("width", self.width as f64) as u32;
+        self.height = rm.read_formula("height", self.height as f64) as u32;
+        self.x = rm.read_formula("x", self.x as f64) as i32;
+        self.y = rm.read_formula("y", self.y as f64) as i32;
+    }
+}
+
+impl RainmeterPlugin for OverlayMeter {
+    fn initialize(&mut self, _rm: RainmeterContext) {
+        // Spawn the WebView on a background thread
+        let (tx, rx) = channel();
+        let url = self.url.clone();
+        let w = self.width;
+        let h = self.height;
+        let x = self.x;
+        let y = self.y;
+        self.load_data(&_rm);
+        _rm.log(
+            RmLogLevel::LogNotice,
+            &format!(
+                "Initializing OverlayMeter plugin with url={}, width={}, height={}, x={}, y={}",
+                url, w, h, x, y
+            ),
+        );
+
+        let ctx = _rm.clone();
+        std::thread::spawn(move || {
+            let result = std::panic::catch_unwind(|| {
+                // Prepare the thread for COM
+                // 1) Initialize COM for this thread
+                unsafe {
+                    CoInitializeEx(None, COINIT_APARTMENTTHREADED)
+                        .ok()
+                        .expect("CoInitializeEx failed");
+                }
+
+                let event_loop = EventLoopBuilder::new().with_any_thread(true).build();
+
+                let window = WindowBuilder::new()
+                    .with_decorations(false)
+                    .with_transparent(true)
+                    //.with_always_on_top(false)
+                    //.with_inner_size(LogicalSize::new(w, h))
+                    //.with_position(LogicalPosition::new(x, y))
+                    .build(&event_loop)
+                    .expect("Failed to create window");
+
+                // Parent under desktop layer
+                //set_window_layer(&window).expect("Failed to set window layer");
+
+                // Send back the HWND
+                let hwnd = window.hwnd() as isize;
+                tx.send(Some(hwnd)).unwrap();
+                ctx.log(
+                    RmLogLevel::LogNotice,
+                    format!("Window Init HWND: {:?}", hwnd).as_str(),
+                );
+
+                // Launch WebView
+                /*let mut ctx = WebContext::new(Some(PathBuf::from(
+                    "C:\\Users\\Kitsune\\Documents\\datadir",
+                )));*/
+                let data_dir = make_webview_data_dir(&ctx);
+                let mut ctx = WebContext::new(Some(data_dir));
+                unsafe {
+                    MessageBoxA(
+                        None,
+                        PCSTR(
+                            format!("We are about to build the context. HWND {:?}\0", window)
+                                .as_ptr(),
+                        ),
+                        PCSTR(b"DEBUG\0".as_ptr()),
+                        MB_OK,
+                    );
+                }
+                let _wv = WebViewBuilder::new_with_web_context(&mut ctx)
+                    .with_url(&url)
+                    .build(&window)
+                    .expect("Failed to build WebView");
+
+                event_loop.run(move |event, _, control_flow| {
+                    *control_flow = ControlFlow::Poll;
+                    if let Event::WindowEvent {
+                        event: WindowEvent::CloseRequested,
+                        ..
+                    } = event
+                    {
+                        *control_flow = ControlFlow::Exit;
+                    }
+                });
+            });
+
+            if let Err(err) = result {
+                let msg = err
+                    .downcast_ref::<&str>()
+                    .map(|s| s.to_string())
+                    .or_else(|| err.downcast_ref::<String>().cloned())
+                    .unwrap_or_else(|| "<non‑string panic>".into());
+                ctx.log(RmLogLevel::LogError, &format!("WebEngine panic: {}", msg));
+                let _ = tx.send(None);
+            }
+        });
+
+        if let Ok(raw) = rx.recv() {
+            _rm.log(
+                RmLogLevel::LogNotice,
+                &format!("Using OverlayMeter HWND: {:?}", raw),
+            );
+            self.hwnd = raw;
+        }
+    }
+
+    fn reload(&mut self, rm: RainmeterContext, _max_value: &mut f64) {
+        rm.log(RmLogLevel::LogNotice, "Reloading OverlayMeter plugin...");
+        // Read options from the skin
+        self.load_data(&rm);
+        rm.log(
+            RmLogLevel::LogNotice,
+            &format!(
+                "OverlayMeter: url={}, width={}, height={}, x={}, y={}",
+                self.url, self.width, self.height, self.x, self.y
+            ),
+        );
+        // Reposition the WebView window
+        self.reposition(&rm);
+    }
+
+    fn update(&mut self, _rm: RainmeterContext) -> f64 {
+        //self.reposition();
+        0.0
+    }
+
+    fn get_string(&mut self, _rm: RainmeterContext) -> Option<String> {
+        None
+    }
+
+    fn execute_bang(&mut self, _rm: RainmeterContext, _args: &str) {
+        // no-op
+    }
+
+    fn finalize(&mut self, _rm: RainmeterContext) {
+        // Clean-up if needed
+    }
+}
+
+// Declare the plugin entry points
+declare_plugin!(crate::OverlayMeter);
