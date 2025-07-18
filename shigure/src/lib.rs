@@ -21,18 +21,21 @@ use tao::{
 use windows::Win32::Foundation::HWND;
 use windows::Win32::System::Com::{COINIT_APARTMENTTHREADED, CoInitializeEx};
 use windows::Win32::UI::WindowsAndMessaging::{
-    GWL_EXSTYLE, GetWindowLongW, SetWindowLongW, WS_EX_TRANSPARENT,
+    GWL_EXSTYLE, GetWindowLongW, SetWindowLongW, WS_EX_LAYERED, WS_EX_TRANSPARENT,
 };
 
 use rainmeter::*;
 use wry::{WebContext, WebViewBuilder};
 
-/// Create a writable user-data folder under %LOCALAPPDATA%\Rainmeter\OverlayMeter
+/// Ensure a writable data folder under %LOCALAPPDATA%\Rainmeter\OverlayMeter
 fn make_webview_data_dir(rm: &RainmeterContext) -> PathBuf {
     let dir = env::var_os("LOCALAPPDATA")
         .map(PathBuf::from)
         .unwrap_or_else(|| {
-            rm.log(RmLogLevel::LogWarning, "LOCALAPPDATA not found; using CWD");
+            rm.log(
+                RmLogLevel::LogWarning,
+                "LOCALAPPDATA not found; using current directory",
+            );
             env::current_dir().unwrap()
         })
         .join("Rainmeter")
@@ -65,18 +68,16 @@ impl OverlayMeter {
         self.x = rm.read_formula("x", self.x as f64) as i32;
         self.y = rm.read_formula("y", self.y as f64) as i32;
     }
+
     fn reposition(&self, rm: &RainmeterContext) {
         if let Some(raw) = self.hwnd {
-            // recompute skin rect
-            let skin = HWND(rm.get_skin_window_raw() as _);
-            let mut rect = windows::Win32::Foundation::RECT::default();
+            let hwnd = HWND(raw as _);
             unsafe {
-                windows::Win32::UI::WindowsAndMessaging::GetWindowRect(skin, &mut rect);
                 windows::Win32::UI::WindowsAndMessaging::SetWindowPos(
-                    HWND(raw as _),
+                    hwnd,
                     Some(windows::Win32::UI::WindowsAndMessaging::HWND_TOPMOST),
-                    rect.left + self.x,
-                    rect.top + self.y,
+                    self.x,
+                    self.y,
                     self.width as i32,
                     self.height as i32,
                     windows::Win32::UI::WindowsAndMessaging::SWP_NOACTIVATE
@@ -90,6 +91,7 @@ impl OverlayMeter {
 
 impl RainmeterPlugin for OverlayMeter {
     fn initialize(&mut self, rm: RainmeterContext) {
+        // Load initial skin options
         self.load_data(&rm);
         rm.log(
             RmLogLevel::LogNotice,
@@ -98,86 +100,65 @@ impl RainmeterPlugin for OverlayMeter {
                 self.url, self.width, self.height, self.x, self.y
             ),
         );
-        // Prepare receiver
+
+        // Prepare channel for HWND
         let (tx, rx) = channel();
         self.rx = Some(rx);
         let url = self.url.clone();
         let (w, h, x, y) = (self.width, self.height, self.x, self.y);
-        //let parent_hwnd_raw = rm.get_skin_window_raw() as isize;
+
+        // Rainmeter skin window handle to parent our child
         let parent_hwnd = rm.get_skin_window_raw() as isize;
         rm.log(
             RmLogLevel::LogDebug,
             &format!("Parent HWND = 0x{:x}", parent_hwnd),
         );
+
         let thread_ctx = rm.clone();
         thread::spawn(move || {
+            // Initialize COM on this thread for WebView2
             unsafe {
-                let _ = CoInitializeEx(None, COINIT_APARTMENTTHREADED).ok();
+                CoInitializeEx(None, COINIT_APARTMENTTHREADED).ok();
             }
-            // 1) Figure out the skin's screen position
-            let skin = HWND(parent_hwnd as _);
-            let mut rect = windows::Win32::Foundation::RECT::default();
-            let _ =
-                unsafe { windows::Win32::UI::WindowsAndMessaging::GetWindowRect(skin, &mut rect) };
 
-            // 2) Compute our window's absolute screen coords
-            let screen_x = rect.left + x;
-            let screen_y = rect.top + y;
-
-            // 3) Build a _top-level_ always-on-top window (not a child!)
+            // Build Tao event loop & child window
             let event_loop = EventLoopBuilder::new().with_any_thread(true).build();
             let window = WindowBuilder::new()
                 .with_decorations(false)
-                .with_transparent(false)
-                .with_always_on_top(true)
-                .with_skip_taskbar(true)
+                .with_transparent(true) // allow per-pixel transparency
+                .with_parent_window(parent_hwnd)
                 .with_inner_size(LogicalSize::new(w, h))
-                .with_position(LogicalPosition::new(screen_x, screen_y))
+                .with_position(LogicalPosition::new(x, y))
                 .build(&event_loop)
-                .expect("WindowBuilder failed");
+                .expect("Failed to create child window");
 
-            // Ensure WS_EX_TRANSPARENT is cleared so we receive input
-            let hwnd = HWND(window.hwnd() as _);
+            // Fix styles: keep layered, remove hit-test transparent
+            let raw = window.hwnd() as isize;
+            let hwnd = HWND(raw as _);
             unsafe {
                 let style = GetWindowLongW(hwnd, GWL_EXSTYLE);
-                SetWindowLongW(hwnd, GWL_EXSTYLE, style & !(WS_EX_TRANSPARENT.0 as i32));
+                let new_style = (style | WS_EX_LAYERED.0 as i32) & !(WS_EX_TRANSPARENT.0 as i32);
+                SetWindowLongW(hwnd, GWL_EXSTYLE, new_style);
             }
-            tx.send(window.hwnd() as isize).unwrap();
-            thread_ctx.log(
-                RmLogLevel::LogDebug,
-                &format!("Child HWND = 0x{:x}", hwnd.0 as isize),
-            );
-            // WebView2
+
+            // Send handle back to main thread
+            tx.send(raw).unwrap();
+            thread_ctx.log(RmLogLevel::LogDebug, &format!("Child HWND = 0x{:x}", raw));
+
+            // WebView2 initialization
             let data_dir = make_webview_data_dir(&thread_ctx);
             let mut webctx = WebContext::new(Some(data_dir));
 
-            let html_content = r#"<!DOCTYPE html>
-<html lang="en">
-<head>
-  <meta charset="UTF-8">
-  <title>Red BG</title>
-  <style>
-    html, body {
-      margin: 0;
-      padding: 0;
-      width: 100%;
-      height: 100%;
-      background: red;
-    }
-  </style>
-</head>
-<body>
-  <!-- your content here -->
-</body>
-</html>
-"#;
-
-            WebViewBuilder::new_with_web_context(&mut webctx)
-                .with_transparent(false)
-                //.with_url("https://www.example.com")
-                .with_html(html_content)
+            // Inline test HTML: red background to verify rendering
+            let html =
+                r#"<!DOCTYPE html><html><body style='margin:0;background:red;'></body></html>"#;
+            let _wv = WebViewBuilder::new_with_web_context(&mut webctx)
+                .with_transparent(true)
+                .with_html(html)
                 .build(&window)
                 .expect("Failed to build WebView");
+
+            // Enter event loop
             event_loop.run(move |event, _, control_flow| {
                 *control_flow = ControlFlow::Poll;
                 if let Event::WindowEvent {
@@ -190,26 +171,30 @@ impl RainmeterPlugin for OverlayMeter {
             });
         });
     }
-    fn update(&mut self, rm: RainmeterContext) -> f64 {
-        if self.hwnd.is_none() {
-            if let Some(rx) = &self.rx {
-                if let Ok(hwnd) = rx.try_recv() {
-                    rm.log(
-                        RmLogLevel::LogNotice,
-                        &format!("Overlay HWND = 0x{:x}", hwnd),
-                    );
-                    self.hwnd = Some(hwnd);
-                }
-            }
-        }
-        self.reposition(&rm);
-        0.0
-    }
-    //fn set_option(&mut self, _key: &str, _val: &str) {}
+
     fn reload(&mut self, rm: RainmeterContext, _max: &mut f64) {
         self.load_data(&rm);
         self.reposition(&rm);
     }
+
+    fn update(&mut self, rm: RainmeterContext) -> f64 {
+        // Try retrieving HWND once
+        if self.hwnd.is_none() {
+            if let Some(rx) = &self.rx {
+                if let Ok(raw) = rx.try_recv() {
+                    rm.log(
+                        RmLogLevel::LogNotice,
+                        &format!("Overlay HWND = 0x{:x}", raw),
+                    );
+                    self.hwnd = Some(raw);
+                }
+            }
+        }
+        // Move/resize child window
+        self.reposition(&rm);
+        0.0
+    }
+
     fn get_string(&mut self, _rm: RainmeterContext) -> Option<String> {
         None
     }
