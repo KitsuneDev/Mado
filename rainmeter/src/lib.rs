@@ -1,14 +1,13 @@
-// src/plugin_interface.rs
 //! High-level Rust interface to the Rainmeter C/C++ plugin API.
 //!
 //! Based directly on RainmeterAPI.h (GPL‑2.0) — all host‑provided functions are declared via FFI,
 //! and `RainmeterContext` wraps them in safe, Rust‑native methods.
 
 use std::ffi::{OsStr, c_void};
-use std::marker::PhantomData;
 use std::os::windows::ffi::OsStrExt;
-use windows::core::BOOL;
-use windows::core::PCWSTR;
+use windows::Win32::Foundation::HWND;
+use windows::core::{BOOL, PCWSTR};
+
 // -----------------------------------------------------------------------
 // 1) FFI declarations of host‑provided Rainmeter API functions
 //    See https://docs.rainmeter.net/developers/plugin/cpp/api/
@@ -50,9 +49,17 @@ unsafe extern "system" {
     pub fn RmLog(rm: *mut c_void, level: i32, message: PCWSTR);
 }
 
+// Additional cdecl APIs for formatted and deprecated logging
+#[link(name = "Rainmeter")]
+unsafe extern "C" {
+    pub fn RmLogF(rm: *mut c_void, level: i32, format: PCWSTR, ...);
+    pub fn LSLog(level: i32, unused: PCWSTR, message: PCWSTR) -> BOOL;
+}
+
 // -----------------------------------------------------------------------
 // 2) Helpers: wide‑string conversion
 // -----------------------------------------------------------------------
+
 fn to_pcwstr(s: &str) -> PCWSTR {
     let mut wide: Vec<u16> = OsStr::new(s).encode_wide().collect();
     wide.push(0);
@@ -63,38 +70,45 @@ unsafe fn from_pcwstr(ptr: PCWSTR) -> String {
     if ptr.is_null() {
         return String::new();
     }
-    // find length
     let mut len = 0;
     while *ptr.0.add(len) != 0 {
         len += 1;
     }
-    let slice = std::slice::from_raw_parts(ptr.0, len);
-    String::from_utf16_lossy(slice)
+    String::from_utf16_lossy(std::slice::from_raw_parts(ptr.0, len))
 }
+
+/// Log levels matching Rainmeter's LOG_* constants
 pub enum RmLogLevel {
     LogError = 1,
     LogWarning = 2,
     LogNotice = 3,
     LogDebug = 4,
 }
+
+/// Types for data retrieval via RmGet()
+pub enum RmGetType {
+    MeasureName = 0,
+    Skin = 1,
+    SettingsFile = 2,
+    SkinName = 3,
+    SkinWindowHandle = 4,
+}
+
 // -----------------------------------------------------------------------
 // 3) High‑level Rust wrapper around the raw Rainmeter context pointer.
 // -----------------------------------------------------------------------
+
 pub struct RainmeterContext {
     raw: *mut c_void,
-    //_marker: std::marker::PhantomData<&'a ()>,
 }
 
 impl RainmeterContext {
     /// Create a new context from the raw `rm` pointer.
     pub fn new(raw: *mut c_void) -> Self {
-        Self {
-            raw,
-            //_marker: std::marker::PhantomData,
-        }
+        Self { raw }
     }
 
-    /// Read an option as a string.
+    // --- Section readers ---
     pub fn read_string(&self, key: &str, default: &str) -> String {
         let k = to_pcwstr(key);
         let d = to_pcwstr(default);
@@ -102,7 +116,6 @@ impl RainmeterContext {
         unsafe { from_pcwstr(ptr) }
     }
 
-    /// Read an option as a string from another section.
     pub fn read_string_section(&self, section: &str, key: &str, default: &str) -> String {
         let s = to_pcwstr(section);
         let k = to_pcwstr(key);
@@ -111,90 +124,113 @@ impl RainmeterContext {
         unsafe { from_pcwstr(ptr) }
     }
 
-    /// Read an option (formula or number) as f64.
     pub fn read_formula(&self, key: &str, default: f64) -> f64 {
         let k = to_pcwstr(key);
         unsafe { RmReadFormula(self.raw, k, default) }
     }
 
-    /// Read a formula from another section.
     pub fn read_formula_section(&self, section: &str, key: &str, default: f64) -> f64 {
         let s = to_pcwstr(section);
         let k = to_pcwstr(key);
         unsafe { RmReadFormulaFromSection(self.raw, s, k, default) }
     }
 
-    /// Read an integer from a section (via `RmReadFormulaFromSection`).
+    pub fn read_int(&self, key: &str, default: i32) -> i32 {
+        self.read_formula(key, default as f64) as i32
+    }
+
     pub fn read_int_section(&self, section: &str, key: &str, default: i32) -> i32 {
         self.read_formula_section(section, key, default as f64) as i32
     }
 
-    /// Read a double from a section.
+    pub fn read_double(&self, key: &str, default: f64) -> f64 {
+        self.read_formula(key, default)
+    }
+
     pub fn read_double_section(&self, section: &str, key: &str, default: f64) -> f64 {
         self.read_formula_section(section, key, default)
     }
 
-    /// Replace variables in-line.
     pub fn replace_variables(&self, input: &str) -> String {
         let i = to_pcwstr(input);
         let ptr = unsafe { RmReplaceVariables(self.raw, i) };
         unsafe { from_pcwstr(ptr) }
     }
 
-    /// Convert a relative path to an absolute path.
     pub fn path_to_absolute(&self, relative: &str) -> String {
         let r = to_pcwstr(relative);
         let ptr = unsafe { RmPathToAbsolute(self.raw, r) };
         unsafe { from_pcwstr(ptr) }
     }
 
-    /// Convenience: read and resolve a path option.
     pub fn read_path(&self, key: &str, default: &str) -> String {
         let rel = self.read_string(key, default);
         self.path_to_absolute(&rel)
     }
 
-    /// Execute a bang command.
     pub fn execute(&self, command: &str) {
         let c = to_pcwstr(command);
         unsafe { RmExecute(self.raw, c) };
     }
 
-    /// Retrieve host‑provided data pointers.
-    pub fn get(&self, what: i32) -> *mut c_void {
-        unsafe { RmGet(self.raw, what) }
+    /// Raw RmGet with integer code
+    pub fn get_raw(&self, what: RmGetType) -> *mut c_void {
+        unsafe { RmGet(self.raw, what as i32) }
     }
 
-    /// Read the measure name (via `RmGetType::RMG_MEASURENAME`).
+    /// Retrieve raw PCWSTR for measure name
+    pub fn get_measure_name_raw(&self) -> PCWSTR {
+        PCWSTR(self.get_raw(RmGetType::MeasureName) as _)
+    }
+
+    /// Measure name as Rust String
     pub fn get_measure_name(&self) -> String {
-        let ptr = self.get(0);
-        unsafe { from_pcwstr(PCWSTR(ptr as _)) }
+        let ptr = self.get_measure_name_raw();
+        unsafe { from_pcwstr(ptr) }
     }
 
-    /// Read the settings file path (via RMG_SETTINGSFILE).
-    pub fn get_settings_file(&self) -> String {
-        let ptr = unsafe { RmGet(std::ptr::null_mut(), 2) };
-        unsafe { from_pcwstr(PCWSTR(ptr as _)) }
+    /// Raw skin pointer (void*)
+    pub fn get_skin_raw(&self) -> *mut c_void {
+        self.get_raw(RmGetType::Skin)
     }
 
-    /// Read the skin handle (void*).
+    /// Skin pointer (void*)
     pub fn get_skin(&self) -> *mut c_void {
-        self.get(1)
+        self.get_skin_raw()
     }
 
-    /// Read the skin name (via RMG_SKINNAME).
+    /// Raw PCWSTR for settings file path
+    pub fn get_settings_file_raw(&self) -> PCWSTR {
+        PCWSTR(unsafe { RmGet(std::ptr::null_mut(), RmGetType::SettingsFile as i32) } as _)
+    }
+
+    /// Settings file path as Rust String
+    pub fn get_settings_file(&self) -> String {
+        let ptr = self.get_settings_file_raw();
+        unsafe { from_pcwstr(ptr) }
+    }
+
+    /// Raw PCWSTR for skin name
+    pub fn get_skin_name_raw(&self) -> PCWSTR {
+        PCWSTR(self.get_raw(RmGetType::SkinName) as _)
+    }
+
+    /// Skin name as Rust String
     pub fn get_skin_name(&self) -> String {
-        let ptr = self.get(3);
-        unsafe { from_pcwstr(PCWSTR(ptr as _)) }
+        let ptr = self.get_skin_name_raw();
+        unsafe { from_pcwstr(ptr) }
     }
 
-    /// Read the HWND of the skin window (via RMG_SKINWINDOWHANDLE).
-    pub fn get_skin_window(&self) -> usize {
-        let ptr = self.get(4);
-        ptr as usize
+    /// Raw window-handle pointer
+    pub fn get_skin_window_raw(&self) -> *mut c_void {
+        self.get_raw(RmGetType::SkinWindowHandle)
     }
 
-    /// Write a log message.
+    /// HWND of the skin window
+    pub fn get_skin_window(&self) -> HWND {
+        HWND(self.get_skin_window_raw())
+    }
+
     pub fn log(&self, level: RmLogLevel, message: &str) {
         let m = to_pcwstr(message);
         unsafe { RmLog(self.raw, level as i32, m) };
@@ -208,23 +244,16 @@ impl Clone for RainmeterContext {
         Self { raw: self.raw }
     }
 }
+
 /// Trait every Rust‑native plugin should implement.
 pub trait RainmeterPlugin: Default + 'static {
-    /// Called once when the measure is first loaded.
     fn initialize(&mut self, rm: RainmeterContext);
-    /// Called when the skin is (re)loaded; `max_value` holds the default numeric value.
     fn reload(&mut self, rm: RainmeterContext, max_value: &mut f64);
-    /// Called on every update cycle; return the numeric value.
     fn update(&mut self, rm: RainmeterContext) -> f64;
-    /// Called when a string value is requested; return `Some(String)` or `None`.
     fn get_string(&mut self, rm: RainmeterContext) -> Option<String> {
         None
     }
-    /// Called when the skin executes a bang on this measure; `args` is the argument string.
-    fn execute_bang(&mut self, rm: RainmeterContext, args: &str) {
-        // default no-op
-    }
-    /// Called once when the measure is unloaded.
+    fn execute_bang(&mut self, rm: RainmeterContext, args: &str) {}
     fn finalize(&mut self, rm: RainmeterContext);
 }
 
