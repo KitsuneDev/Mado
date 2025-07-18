@@ -1,16 +1,19 @@
 // src/overlay_meter_plugin.rs
-// Shigure — Rainmeter plugin embedding Wry/WebView2 as a child of the Rainmeter skin window
+// Shigure — Rainmeter plugin embedding Wry/WebView2 as a non-resizable child
+// with clean shutdown and dynamic URL updates
 
 use std::{
     env, fs,
     path::PathBuf,
-    sync::mpsc::{Receiver, channel},
+    rc::Rc,
+    sync::mpsc::{Receiver, Sender, channel},
     thread,
 };
 
-use tao::platform::windows::{
-    EventLoopBuilderExtWindows, WindowBuilderExtWindows, WindowExtWindows,
-}; // for `.with_parent_window()`
+use tao::platform::{
+    run_return::EventLoopExtRunReturn,
+    windows::{EventLoopBuilderExtWindows, WindowBuilderExtWindows, WindowExtWindows},
+}; // for .with_parent_window()
 use tao::{
     dpi::{LogicalPosition, LogicalSize},
     event::{Event, WindowEvent},
@@ -18,24 +21,25 @@ use tao::{
     window::WindowBuilder,
 };
 
-use windows::Win32::Foundation::HWND;
 use windows::Win32::System::Com::{COINIT_APARTMENTTHREADED, CoInitializeEx};
 use windows::Win32::UI::WindowsAndMessaging::{
-    GWL_EXSTYLE, GetWindowLongW, SetWindowLongW, WS_EX_LAYERED, WS_EX_TRANSPARENT,
+    DestroyWindow, GWL_EXSTYLE, GWL_STYLE, GetWindowLongW, SetWindowLongW, WS_BORDER, WS_CAPTION,
+    WS_EX_LAYERED, WS_EX_TRANSPARENT, WS_THICKFRAME,
+};
+use windows::Win32::{
+    Foundation::HWND,
+    UI::WindowsAndMessaging::{LWA_ALPHA, SetLayeredWindowAttributes},
 };
 
 use rainmeter::*;
-use wry::{WebContext, WebViewBuilder};
+use softbuffer::{Context as SoftbufferContext, Surface as SoftbufferSurface};
+use wry::{RGBA, WebContext, WebViewBuilder};
 
-/// Ensure a writable data folder under %LOCALAPPDATA%\Rainmeter\OverlayMeter
 fn make_webview_data_dir(rm: &RainmeterContext) -> PathBuf {
     let dir = env::var_os("LOCALAPPDATA")
         .map(PathBuf::from)
         .unwrap_or_else(|| {
-            rm.log(
-                RmLogLevel::LogWarning,
-                "LOCALAPPDATA not found; using current directory",
-            );
+            rm.log(RmLogLevel::LogWarning, "LOCALAPPDATA missing; using CWD");
             env::current_dir().unwrap()
         })
         .join("Rainmeter")
@@ -43,21 +47,40 @@ fn make_webview_data_dir(rm: &RainmeterContext) -> PathBuf {
     let _ = fs::create_dir_all(&dir);
     rm.log(
         RmLogLevel::LogNotice,
-        &format!("WebView2 user data folder: {:?}", dir),
+        &format!("WebView2 data dir: {:?}", dir),
     );
     dir
 }
 
-/// Plugin state
-#[derive(Default)]
 struct OverlayMeter {
     url: String,
     width: u32,
     height: u32,
     x: i32,
     y: i32,
+
+    hwnd_rx: Option<Receiver<isize>>,
+    cmd_tx: Option<Sender<String>>,
+    shutdown_tx: Option<Sender<()>>,
+    thread_handle: Option<thread::JoinHandle<()>>,
     hwnd: Option<isize>,
-    rx: Option<Receiver<isize>>,
+}
+
+impl Default for OverlayMeter {
+    fn default() -> Self {
+        Self {
+            url: "https://openai.com".into(),
+            width: 300,
+            height: 200,
+            x: 0,
+            y: 0,
+            hwnd_rx: None,
+            cmd_tx: None,
+            shutdown_tx: None,
+            thread_handle: None,
+            hwnd: None,
+        }
+    }
 }
 
 impl OverlayMeter {
@@ -91,7 +114,7 @@ impl OverlayMeter {
 
 impl RainmeterPlugin for OverlayMeter {
     fn initialize(&mut self, rm: RainmeterContext) {
-        // Load initial skin options
+        // Load skin options
         self.load_data(&rm);
         rm.log(
             RmLogLevel::LogNotice,
@@ -101,86 +124,144 @@ impl RainmeterPlugin for OverlayMeter {
             ),
         );
 
-        // Prepare channel for HWND
-        let (tx, rx) = channel();
-        self.rx = Some(rx);
+        // Channels for handshake, commands, shutdown
+        let (hwnd_tx, hwnd_rx) = channel::<isize>();
+        let (cmd_tx, cmd_rx) = channel::<String>();
+        let (shutdown_tx, shutdown_rx) = channel::<()>();
+        self.hwnd_rx = Some(hwnd_rx);
+        self.cmd_tx = Some(cmd_tx.clone());
+        self.shutdown_tx = Some(shutdown_tx.clone());
+
+        // Spawn WebView thread
         let url = self.url.clone();
         let (w, h, x, y) = (self.width, self.height, self.x, self.y);
-
-        // Rainmeter skin window handle to parent our child
-        let parent_hwnd = rm.get_skin_window_raw() as isize;
-        rm.log(
-            RmLogLevel::LogDebug,
-            &format!("Parent HWND = 0x{:x}", parent_hwnd),
-        );
-
+        let parent = rm.get_skin_window_raw() as isize;
         let thread_ctx = rm.clone();
-        thread::spawn(move || {
-            // Initialize COM on this thread for WebView2
+
+        let handle = thread::spawn(move || {
+            // Initialize COM for WebView2
             unsafe {
                 CoInitializeEx(None, COINIT_APARTMENTTHREADED).ok();
             }
 
-            // Build Tao event loop & child window
-            let event_loop = EventLoopBuilder::new().with_any_thread(true).build();
+            // Tao event loop + child window
+            let mut event_loop = EventLoopBuilder::new().with_any_thread(true).build();
             let window = WindowBuilder::new()
                 .with_decorations(false)
-                .with_transparent(true) // allow per-pixel transparency
-                .with_parent_window(parent_hwnd)
+                .with_resizable(false)
+                .with_transparent(true)
+                .with_parent_window(parent)
                 .with_inner_size(LogicalSize::new(w, h))
                 .with_position(LogicalPosition::new(x, y))
                 .build(&event_loop)
                 .expect("Failed to create child window");
 
-            // Fix styles: keep layered, remove hit-test transparent
+            // Strip out the black borders and ensure we keep layered alpha
             let raw = window.hwnd() as isize;
             let hwnd = HWND(raw as _);
-            unsafe {
-                let style = GetWindowLongW(hwnd, GWL_EXSTYLE);
-                let new_style = (style | WS_EX_LAYERED.0 as i32) & !(WS_EX_TRANSPARENT.0 as i32);
-                SetWindowLongW(hwnd, GWL_EXSTYLE, new_style);
-            }
+            // Do we really need this? SoftBuffer rendering seems to work fine without it.
+            /*unsafe {
+                let ex = GetWindowLongW(hwnd, GWL_EXSTYLE);
+                let new_ex = (ex | WS_EX_LAYERED.0 as i32) & !(WS_EX_TRANSPARENT.0 as i32);
+                SetWindowLongW(hwnd, GWL_EXSTYLE, new_ex);
+                SetLayeredWindowAttributes(
+                    hwnd,
+                    windows::Win32::Foundation::COLORREF(0),
+                    255,
+                    LWA_ALPHA,
+                )
+                .ok();
 
-            // Send handle back to main thread
-            tx.send(raw).unwrap();
+                let st = GetWindowLongW(hwnd, GWL_STYLE);
+                let new_st =
+                    st & !(WS_BORDER.0 as i32 | WS_CAPTION.0 as i32 | WS_THICKFRAME.0 as i32);
+                SetWindowLongW(hwnd, GWL_STYLE, new_st);
+            }*/
+            window.set_visible(true);
+
+            // Handshake
+            hwnd_tx.send(raw).unwrap();
             thread_ctx.log(RmLogLevel::LogDebug, &format!("Child HWND = 0x{:x}", raw));
 
-            // WebView2 initialization
+            let window = Rc::new(window);
+            let sb_context =
+                SoftbufferContext::new(window.clone()).expect("SoftbufferContext failed");
+            let mut sb_surface = SoftbufferSurface::new(&sb_context, window.clone())
+                .expect("SoftbufferSurface failed");
+
+            // WebView2
             let data_dir = make_webview_data_dir(&thread_ctx);
             let mut webctx = WebContext::new(Some(data_dir));
-
-            // Inline test HTML: red background to verify rendering
-            let html =
-                r#"<!DOCTYPE html><html><body style='margin:0;background:red;'></body></html>"#;
-            let _wv = WebViewBuilder::new_with_web_context(&mut webctx)
+            let wv = WebViewBuilder::new_with_web_context(&mut webctx)
                 .with_transparent(true)
-                .with_html(html)
+                .with_background_color((0, 0, 0, 0)) // transparent background
+                .with_url(&url)
                 .build(&window)
                 .expect("Failed to build WebView");
 
-            // Enter event loop
-            event_loop.run(move |event, _, control_flow| {
-                *control_flow = ControlFlow::Poll;
-                if let Event::WindowEvent {
-                    event: WindowEvent::CloseRequested,
-                    ..
-                } = event
-                {
+            window.request_redraw();
+            // Run until shutdown
+            event_loop.run_return(move |event, _, control_flow| {
+                if shutdown_rx.try_recv().is_ok() {
                     *control_flow = ControlFlow::Exit;
+                    return;
+                }
+                // URL updates
+                if let Ok(next) = cmd_rx.try_recv() {
+                    wv.load_url(&next).ok();
+                }
+
+                match event {
+                    // When it's time to redraw, clear to fully transparent:
+                    Event::RedrawRequested(_) => {
+                        use std::num::NonZeroU32;
+                        let size = window.inner_size();
+                        sb_surface
+                            .resize(
+                                NonZeroU32::new(size.width).unwrap(),
+                                NonZeroU32::new(size.height).unwrap(),
+                            )
+                            .unwrap();
+                        let mut buffer = sb_surface.buffer_mut().unwrap();
+                        // fill with 0 => fully transparent
+                        buffer.fill(0);
+                        buffer.present().unwrap();
+                    }
+                    Event::WindowEvent {
+                        event: WindowEvent::CloseRequested,
+                        ..
+                    } => {
+                        *control_flow = ControlFlow::Exit;
+                    }
+                    _ => {
+                        *control_flow = ControlFlow::Poll;
+                    }
                 }
             });
+
+            // Tear down
+            /*unsafe {
+                DestroyWindow(hwnd);
+            }*/
         });
+        self.thread_handle = Some(handle);
     }
 
     fn reload(&mut self, rm: RainmeterContext, _max: &mut f64) {
+        let old = self.url.clone();
         self.load_data(&rm);
         self.reposition(&rm);
+        if self.url != old {
+            if let Some(tx) = &self.cmd_tx {
+                tx.send(self.url.clone()).ok();
+            }
+        }
     }
 
     fn update(&mut self, rm: RainmeterContext) -> f64 {
-        // Try retrieving HWND once
+        // grab HWND once
         if self.hwnd.is_none() {
-            if let Some(rx) = &self.rx {
+            if let Some(rx) = &self.hwnd_rx {
                 if let Ok(raw) = rx.try_recv() {
                     rm.log(
                         RmLogLevel::LogNotice,
@@ -190,16 +271,21 @@ impl RainmeterPlugin for OverlayMeter {
                 }
             }
         }
-        // Move/resize child window
         self.reposition(&rm);
         0.0
+    }
+
+    fn finalize(&mut self, _rm: RainmeterContext) {
+        if let Some(tx) = self.shutdown_tx.take() {
+            let _ = tx.send(());
+        }
+        // allow thread to exit on its own
     }
 
     fn get_string(&mut self, _rm: RainmeterContext) -> Option<String> {
         None
     }
     fn execute_bang(&mut self, _rm: RainmeterContext, _args: &str) {}
-    fn finalize(&mut self, _rm: RainmeterContext) {}
 }
 
 declare_plugin!(crate::OverlayMeter);

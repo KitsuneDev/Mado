@@ -1,7 +1,10 @@
 //! High-level Rust interface to the Rainmeter C/C++ plugin API.
-//!
-//! Based directly on RainmeterAPI.h (GPL‑2.0) — all host‑provided functions are declared via FFI,
-//! and `RainmeterContext` wraps them in safe, Rust‑native methods.
+//! Simply implement the `RainmeterPlugin` trait in your plugin,
+//! and use the `declare_plugin!` macro to expose it to Rainmeter.
+//! Don't forget to add to your `Cargo.toml`:
+//! ```toml
+//! [lib]
+//! crate-type = ["cdylib"]```
 
 use std::ffi::{OsStr, c_void};
 use std::os::windows::ffi::OsStrExt;
@@ -9,7 +12,7 @@ use windows::Win32::Foundation::HWND;
 use windows::core::{BOOL, PCWSTR};
 
 // -----------------------------------------------------------------------
-// 1) FFI declarations of host‑provided Rainmeter API functions
+// FFI declarations of host‑provided Rainmeter API functions
 //    See https://docs.rainmeter.net/developers/plugin/cpp/api/
 // -----------------------------------------------------------------------
 #[link(name = "Rainmeter")]
@@ -57,7 +60,7 @@ unsafe extern "C" {
 }
 
 // -----------------------------------------------------------------------
-// 2) Helpers: wide‑string conversion
+// Helpers: wide‑string conversion
 // -----------------------------------------------------------------------
 
 fn to_pcwstr(s: &str) -> PCWSTR {
@@ -95,7 +98,7 @@ pub enum RmGetType {
 }
 
 // -----------------------------------------------------------------------
-// 3) High‑level Rust wrapper around the raw Rainmeter context pointer.
+// High‑level Rust wrapper around the raw Rainmeter context pointer.
 // -----------------------------------------------------------------------
 
 pub struct RainmeterContext {
