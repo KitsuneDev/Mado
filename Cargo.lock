@@ -1792,6 +1792,8 @@ dependencies = [
 [[package]]
 name = "rainmeter"
 version = "0.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "58a9ddf71d8449dcdc4c076bb8ba4c03b3097ac793883eb0b037654c41059826"
 dependencies = [
  "once_cell",
  "tao",
