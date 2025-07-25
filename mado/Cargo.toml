@@ -4,4 +4,6 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
-wry="0.52.0"
+serde = "1.0.219"
+wry = "0.52.0"
+wry_cmd = "0.1.2"
