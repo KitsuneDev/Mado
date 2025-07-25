@@ -1,12 +1,9 @@
-use std::sync::Arc;
-
 use mado::{
     events::Event,
     services::music_player::{MusicPlayerService, MusicPlayerState, MusicPlayerStatus},
 };
 use once_cell::sync::Lazy;
 use parking_lot::Mutex;
-use rainmeter::RainmeterContext;
 use wry_cmd::commands;
 
 use crate::{get_rainmeter, raise_event};

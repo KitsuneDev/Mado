@@ -28,15 +28,8 @@ use tao::{
     window::WindowBuilder,
 };
 
+use windows::Win32::Foundation::HWND;
 use windows::Win32::System::Com::{COINIT_APARTMENTTHREADED, CoInitializeEx};
-use windows::Win32::UI::WindowsAndMessaging::{
-    DestroyWindow, GWL_EXSTYLE, GWL_STYLE, GetWindowLongW, SetWindowLongW, WS_BORDER, WS_CAPTION,
-    WS_EX_LAYERED, WS_EX_TRANSPARENT, WS_THICKFRAME,
-};
-use windows::Win32::{
-    Foundation::HWND,
-    UI::WindowsAndMessaging::{LWA_ALPHA, SetLayeredWindowAttributes},
-};
 
 use rainmeter::*;
 use softbuffer::{Context as SoftbufferContext, Surface as SoftbufferSurface};
@@ -191,7 +184,7 @@ impl RainmeterPlugin for OverlayMeter {
 
         let handle = thread::spawn(move || {
             unsafe {
-                CoInitializeEx(None, COINIT_APARTMENTTHREADED).ok();
+                let _ = CoInitializeEx(None, COINIT_APARTMENTTHREADED).ok();
             }
             let mut event_loop = EventLoopBuilder::new().with_any_thread(true).build();
             let window = WindowBuilder::new()
@@ -304,8 +297,27 @@ impl RainmeterPlugin for OverlayMeter {
     }
 
     fn finalize(&mut self, _rm: RainmeterContext) {
+        // 1) Tell the event loop to exit
         if let Some(tx) = self.shutdown_tx.take() {
             let _ = tx.send(());
+        }
+
+        // 2) Wake up the event loop (so it sees your shutdown flag right away)
+        if let Some(hwnd) = self.hwnd {
+            unsafe {
+                // Trigger a redraw; with ControlFlow::Poll your callback
+                // will run again immediately and see the shutdown flag.
+                let _ = windows::Win32::Graphics::Gdi::InvalidateRect(
+                    Some(HWND(hwnd as _)),
+                    None,
+                    false,
+                );
+            }
+        }
+
+        // 3) Wait for the thread to actually exit - *join* it
+        if let Some(handle) = self.thread_handle.take() {
+            let _ = handle.join();
         }
     }
 

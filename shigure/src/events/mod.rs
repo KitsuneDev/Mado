@@ -1,4 +1,3 @@
-use mado::events::{Event, EventRaiser};
 use rainmeter::RainmeterContext;
 
 use crate::OverlayMeter;
