@@ -21,7 +21,7 @@ pub enum MusicPlayerStatus {
     Paused,
 }
 
-#[derive(Debug, Clone, Serialize, PartialEq)]
+#[derive(Debug, Clone, Serialize)]
 pub struct MusicPlayerState {
     pub is_connected: bool,
     pub player: String,
@@ -39,4 +39,21 @@ pub struct MusicPlayerState {
     /// Volume Percentage (0.0 to 1.0)
     pub volume: f64,
     pub status: MusicPlayerStatus,
+}
+
+impl PartialEq for MusicPlayerState {
+    fn eq(&self, other: &Self) -> bool {
+        self.is_connected == other.is_connected &&
+        //self.player == other.player && -- This seems to glitch with a few players
+        self.title == other.title &&
+        self.artist == other.artist &&
+        self.album == other.album &&
+        self.cover == other.cover &&
+        self.duration == other.duration &&
+        self.position == other.position &&
+        // Compare f64 fields with epsilon for floating-point precision
+        (self.progress - other.progress).abs() < f64::EPSILON &&
+        (self.volume - other.volume).abs() < f64::EPSILON &&
+        self.status == other.status
+    }
 }
