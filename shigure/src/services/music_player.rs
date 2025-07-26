@@ -77,12 +77,11 @@ pub fn tick_music_player() {
     // If the song info has changed, update it and raise an event
     if *last_song_info != Some(current_song.clone()) {
         *last_song_info = Some(current_song.clone());
-        if let Some(rm) = get_rainmeter() {
-            raise_event(Event {
-                kind: "music_player_update",
-                value: current_song.clone(),
-            });
-        }
+
+        raise_event(Event {
+            kind: "music_player_update",
+            value: current_song.clone(),
+        });
     }
 }
 
