@@ -17,6 +17,7 @@ use mado::events::EventRaiser;
 use once_cell::sync::Lazy;
 use parking_lot::Mutex;
 use serde::Serialize;
+use shadow_rs::shadow;
 use tao::platform::{
     run_return::EventLoopExtRunReturn,
     windows::{EventLoopBuilderExtWindows, WindowBuilderExtWindows, WindowExtWindows},
@@ -36,6 +37,7 @@ use softbuffer::{Context as SoftbufferContext, Surface as SoftbufferSurface};
 use wry::{WebContext, WebViewBuilder, WebViewBuilderExtWindows};
 use wry_cmd::use_wry_cmd_protocol;
 
+shadow!(build_info);
 mod events;
 mod services;
 
