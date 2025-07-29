@@ -16,7 +16,6 @@ use std::{
 use mado::events::EventRaiser;
 use once_cell::sync::Lazy;
 use parking_lot::Mutex;
-use serde::Serialize;
 use shadow_rs::shadow;
 use tao::platform::{
     run_return::EventLoopExtRunReturn,

@@ -10,9 +10,11 @@ fn main() {
     let manifest_dir = PathBuf::from(env::var("CARGO_MANIFEST_DIR").unwrap());
     let src_dir = manifest_dir.join("src");
     let mado_dir = manifest_dir.join("../mado/src");
-    let docs_file = manifest_dir.join("docs/commands");
-    let _ = fs::create_dir_all(&docs_file);
-    wry_cmd::generate_docs(&[src_dir, mado_dir], &docs_file)
+    let docs_folder = manifest_dir.join("docs");
+    let command_docs = docs_folder.join("commands");
+    let _ = fs::remove_dir_all(&docs_folder);
+    let _ = fs::create_dir_all(&command_docs);
+    wry_cmd::generate_docs(&[src_dir, mado_dir], &command_docs)
         .expect("failed to generate command docs");
 
     // This should always be true, but anyways...

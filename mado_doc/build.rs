@@ -7,6 +7,7 @@ fn main() {
     let manifest_dir = PathBuf::from(env::var("CARGO_MANIFEST_DIR").unwrap());
     let src_dir = manifest_dir.join("src");
     let docs_dir = manifest_dir.join("docs");
+    let _ = fs::remove_dir_all(&docs_dir);
     let commands_docs = &docs_dir.join("commands");
     let events_docs = &docs_dir.join("events");
     let _ = fs::create_dir_all(&commands_docs);
