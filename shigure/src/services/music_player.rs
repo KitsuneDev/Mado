@@ -78,10 +78,7 @@ pub fn tick_music_player() {
     if *last_song_info != Some(current_song.clone()) {
         *last_song_info = Some(current_song.clone());
 
-        raise_event(Event {
-            kind: "music_player_update",
-            value: current_song.clone(),
-        });
+        raise_event(Event::MusicUpdate(current_song));
     }
 }
 

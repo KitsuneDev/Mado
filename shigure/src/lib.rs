@@ -52,7 +52,7 @@ pub fn get_rainmeter() -> Option<Arc<RainmeterContext>> {
 static GLOBAL_CMD_TX: Lazy<Mutex<Option<Sender<Command>>>> = Lazy::new(|| Mutex::new(None));
 
 /// Raise an event from any thread via the global command channel.
-pub fn raise_event<T: Serialize>(event: mado::events::Event<T>) {
+pub fn raise_event(event: mado::events::Event) {
     if let Ok(json) = serde_json::to_string(&event) {
         if let Some(tx) = GLOBAL_CMD_TX.lock().as_ref() {
             let _ = tx.send(Command::Event(json));
@@ -148,7 +148,7 @@ enum Command {
 }
 
 impl EventRaiser for OverlayMeter {
-    fn raise_event<T: Serialize>(&self, event: mado::events::Event<T>) {
+    fn raise_event(&self, event: mado::events::Event) {
         // Local instance-based raise_event
         if let Ok(json) = serde_json::to_string(&event) {
             if let Some(tx) = &self.cmd_tx {

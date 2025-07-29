@@ -1,5 +1,5 @@
 use shadow_rs::shadow;
-use wry_cmd::{command, commands};
+use wry_cmd::commands;
 
 use crate::services::mado_version::MadoVersionService;
 

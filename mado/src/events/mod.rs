@@ -1,11 +1,20 @@
 use serde::Serialize;
 
+use crate::services::music_player::MusicPlayerState;
+
 #[derive(Serialize)]
-pub struct Event<T> {
-    pub kind: &'static str,
-    pub value: T,
+#[serde(tag = "kind", content = "value")]
+pub enum Event {
+    MusicUpdate(MusicPlayerState),
+    ERROR(ErrorData),
+    // Add more variants here
+}
+#[derive(Serialize)]
+pub struct ErrorData {
+    pub message: String,
+    pub code: u32,
 }
 
 pub trait EventRaiser {
-    fn raise_event<T: Serialize>(&self, event: Event<T>);
+    fn raise_event(&self, event: Event);
 }
