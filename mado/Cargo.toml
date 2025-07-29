@@ -6,4 +6,9 @@ edition = "2024"
 [dependencies]
 serde = "1.0.219"
 wry = "0.52.0"
-wry_cmd = "0.1.2"
+wry_cmd = { path = "../../wry_cmd/wry_cmd" }
+shadow-rs = { version = "1.2.0", default-features = false }
+serde_json = "1.0.141"
+
+[build-dependencies]
+shadow-rs = { version = "1.2.0" }

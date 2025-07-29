@@ -44,3 +44,22 @@
 
 **Signature:** `fn set_volume(f64) -> ()`
 
+
+# Struct Reference
+
+## `MusicPlayerState`
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `is_connected` | `bool` |  |
+| `player` | `String` |  |
+| `title` | `String` |  |
+| `artist` | `String` |  |
+| `album` | `String` |  |
+| `cover` | `String` |  |
+| `duration` | `String` |  |
+| `position` | `String` |  |
+| `progress` | `f64` |  |
+| `volume` | `f64` |  |
+| `status` | `MusicPlayerStatus` |  |
+
