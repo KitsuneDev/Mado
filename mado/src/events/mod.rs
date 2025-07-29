@@ -1,15 +1,16 @@
+use schemars::JsonSchema;
 use serde::Serialize;
 
 use crate::services::music_player::MusicPlayerState;
 
-#[derive(Serialize)]
+#[derive(Serialize, JsonSchema)]
 #[serde(tag = "kind", content = "value")]
 pub enum Event {
     MusicUpdate(MusicPlayerState),
     ERROR(ErrorData),
     // Add more variants here
 }
-#[derive(Serialize)]
+#[derive(Serialize, JsonSchema)]
 pub struct ErrorData {
     pub message: String,
     pub code: u32,

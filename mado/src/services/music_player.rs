@@ -1,3 +1,4 @@
+use schemars::JsonSchema;
 use serde::Serialize;
 
 pub trait MusicPlayerService {
@@ -14,14 +15,14 @@ pub trait MusicPlayerService {
     fn get_data(&self) -> MusicPlayerState;
 }
 
-#[derive(Debug, Clone, Serialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, PartialEq, JsonSchema)]
 pub enum MusicPlayerStatus {
     Stopped,
     Playing,
     Paused,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, JsonSchema)]
 pub struct MusicPlayerState {
     pub is_connected: bool,
     pub player: String,

@@ -56,10 +56,10 @@
 | `title` | `String` |  |
 | `artist` | `String` |  |
 | `album` | `String` |  |
-| `cover` | `String` |  |
-| `duration` | `String` |  |
-| `position` | `String` |  |
-| `progress` | `f64` |  |
-| `volume` | `f64` |  |
+| `cover` | `String` | URL to the album cover image |
+| `duration` | `String` | Duration in seconds |
+| `position` | `String` | Position in seconds |
+| `progress` | `f64` | Prrogress Percentage (0.0 to 1.0) |
+| `volume` | `f64` | Volume Percentage (0.0 to 1.0) |
 | `status` | `MusicPlayerStatus` |  |
 

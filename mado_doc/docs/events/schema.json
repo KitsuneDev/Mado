@@ -1,0 +1,123 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Event",
+  "oneOf": [
+    {
+      "type": "object",
+      "properties": {
+        "kind": {
+          "type": "string",
+          "const": "MusicUpdate"
+        },
+        "value": {
+          "$ref": "#/$defs/MusicPlayerState"
+        }
+      },
+      "required": [
+        "kind",
+        "value"
+      ]
+    },
+    {
+      "type": "object",
+      "properties": {
+        "kind": {
+          "type": "string",
+          "const": "ERROR"
+        },
+        "value": {
+          "$ref": "#/$defs/ErrorData"
+        }
+      },
+      "required": [
+        "kind",
+        "value"
+      ]
+    }
+  ],
+  "$defs": {
+    "ErrorData": {
+      "type": "object",
+      "properties": {
+        "code": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        },
+        "message": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "message",
+        "code"
+      ]
+    },
+    "MusicPlayerState": {
+      "type": "object",
+      "properties": {
+        "album": {
+          "type": "string"
+        },
+        "artist": {
+          "type": "string"
+        },
+        "cover": {
+          "description": "URL to the album cover image",
+          "type": "string"
+        },
+        "duration": {
+          "description": "Duration in seconds",
+          "type": "string"
+        },
+        "is_connected": {
+          "type": "boolean"
+        },
+        "player": {
+          "type": "string"
+        },
+        "position": {
+          "description": "Position in seconds",
+          "type": "string"
+        },
+        "progress": {
+          "description": "Prrogress Percentage (0.0 to 1.0)",
+          "type": "number",
+          "format": "double"
+        },
+        "status": {
+          "$ref": "#/$defs/MusicPlayerStatus"
+        },
+        "title": {
+          "type": "string"
+        },
+        "volume": {
+          "description": "Volume Percentage (0.0 to 1.0)",
+          "type": "number",
+          "format": "double"
+        }
+      },
+      "required": [
+        "is_connected",
+        "player",
+        "title",
+        "artist",
+        "album",
+        "cover",
+        "duration",
+        "position",
+        "progress",
+        "volume",
+        "status"
+      ]
+    },
+    "MusicPlayerStatus": {
+      "type": "string",
+      "enum": [
+        "Stopped",
+        "Playing",
+        "Paused"
+      ]
+    }
+  }
+}
